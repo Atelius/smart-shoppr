@@ -1,0 +1,64 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "sqlite"
+  url      = env("DATABASE_URL")
+}
+
+// 1. Core Products
+model Product {
+  id        String   @id @default(uuid())
+  name      String   @unique
+  category  String
+  createdAt DateTime @default(now())
+
+  prices    PriceHistory[]
+  listItems ListItem[]
+}
+
+// 2. Supermarket Stores
+model Store {
+  id      String  @id @default(uuid())
+  name    String  @unique
+  logoUrl String?
+
+  prices PriceHistory[]
+}
+
+// 3. Historical Price Tracker
+model PriceHistory {
+  id          String   @id @default(uuid())
+  productId   String
+  storeId     String
+  price       Float
+  sku         String?
+  isAvailable Boolean  @default(true)
+  scrapedAt   DateTime @default(now())
+
+  product Product @relation(fields: [productId], references: [id], onDelete: Cascade)
+  store   Store   @relation(fields: [storeId], references: [id], onDelete: Cascade)
+
+  @@index([productId, storeId])
+}
+
+// 4. User's Saved Shopping Lists
+model ShoppingList {
+  id        String   @id @default(uuid())
+  name      String
+  createdAt DateTime @default(now())
+
+  items ListItem[]
+}
+
+// 5. Junction table for products inside a shopping list
+model ListItem {
+  id             String @id @default(uuid())
+  shoppingListId String
+  productId      String
+  quantity       Int    @default(1)
+
+  shoppingList ShoppingList @relation(fields: [shoppingListId], references: [id], onDelete: Cascade)
+  product      Product      @relation(fields: [productId], references: [id], onDelete: Cascade)
+}
