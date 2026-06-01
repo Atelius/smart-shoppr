@@ -2,7 +2,6 @@ import { searchEngine, SearchResults } from "./searchEngine";
 import { ProductResult } from "./scrapers/hebScraper";
 import prisma from "../prismaClient";
 
-// ── Category mapper ───────────────────────────────────────────
 const CATEGORY_KEYWORDS: Record<string, string[]> = {
   "Lácteos":           ["leche", "yogurt", "queso", "crema", "mantequilla", "jocoque", "kefir"],
   "Carnes":            ["pollo", "carne", "res", "cerdo", "jamón", "salchicha", "chorizo", "atún", "sardina"],
@@ -24,7 +23,6 @@ function classifyProduct(name: string): string {
   return "Otros";
 }
 
-// ── Types ─────────────────────────────────────────────────────
 export interface StoreTotal {
   store: string;
   total: number;
@@ -32,11 +30,23 @@ export interface StoreTotal {
   unavailableItems: string[];
 }
 
+// Now includes full product details per store — powers the carousel
+export interface StoreOption {
+  store: string;
+  price: number;
+  name: string;
+  imageUrl: string;
+  link: string;
+}
+
 export interface OptimalItem {
   query: string;
   category: string;
   bestOption: ProductResult | null;
-  allPrices: { store: string; price: number }[];
+  // All results grouped by store (full details for carousel)
+  optionsByStore: Record<string, ProductResult[]>;
+  // Selected override: user can pin a specific product
+  selectedKey: string | null; // format: "store::productName"
 }
 
 export interface OptimizationResult {
@@ -51,7 +61,6 @@ export interface OptimizationResult {
   executionTimeMs: number;
 }
 
-// Only active stores — no Sam's/Chedraui (blocked by PerimeterX)
 const ACTIVE_STORES = ["HEB", "Soriana"];
 
 function buildStoreTotals(
@@ -63,24 +72,12 @@ function buildStoreTotals(
     let availableCount = 0;
 
     for (const { query, results } of itemResults) {
-      const match = results
-        .filter((r) => r.store === store)
-        .sort((a, b) => a.price - b.price)[0];
-
-      if (match) {
-        total += match.price;
-        availableCount++;
-      } else {
-        unavailableItems.push(query);
-      }
+      const match = results.filter((r) => r.store === store).sort((a, b) => a.price - b.price)[0];
+      if (match) { total += match.price; availableCount++; }
+      else unavailableItems.push(query);
     }
 
-    return {
-      store,
-      total: Math.round(total * 100) / 100,
-      availableCount,
-      unavailableItems,
-    };
+    return { store, total: Math.round(total * 100) / 100, availableCount, unavailableItems };
   });
 }
 
@@ -90,19 +87,19 @@ function buildOptimalRoute(
   return itemResults.map(({ query, results }) => {
     const category = classifyProduct(query);
 
-    const allPrices = ACTIVE_STORES.map((store) => {
-      const match = results
-        .filter((r) => r.store === store)
-        .sort((a, b) => a.price - b.price)[0];
-      return { store, price: match?.price ?? 0 };
-    }).filter((p) => p.price > 0);
+    // Group all results by store
+    const optionsByStore: Record<string, ProductResult[]> = {};
+    for (const r of results) {
+      if (!optionsByStore[r.store]) optionsByStore[r.store] = [];
+      optionsByStore[r.store].push(r);
+    }
 
-    // Best = lowest price across all stores (only real prices, no $0)
+    // Best = cheapest across all stores
     const best = results.length > 0
       ? results.reduce((a, b) => (a.price < b.price ? a : b))
       : null;
 
-    return { query, category, bestOption: best, allPrices };
+    return { query, category, bestOption: best, optionsByStore, selectedKey: null };
   });
 }
 
@@ -114,14 +111,12 @@ async function savePriceHistory(
       if (results.length === 0) continue;
       const category = classifyProduct(query);
       const product = await prisma.product.upsert({
-        where: { name: query },
-        update: {},
+        where: { name: query }, update: {},
         create: { name: query, category },
       });
       for (const r of results) {
         const store = await prisma.store.upsert({
-          where: { name: r.store },
-          update: {},
+          where: { name: r.store }, update: {},
           create: { name: r.store },
         });
         await prisma.priceHistory.create({
@@ -152,9 +147,10 @@ export async function optimizeList(items: string[]): Promise<OptimizationResult>
     optimalItems.reduce((sum, item) => sum + (item.bestOption?.price ?? 0), 0) * 100
   ) / 100;
 
-  // Savings vs most expensive store that has items
-  const maxStoreTotal = Math.max(...storeTotals.filter((s) => s.availableCount > 0).map((s) => s.total), 0);
-  const totalSavings  = Math.round((maxStoreTotal - grandTotal) * 100) / 100;
+  const maxStoreTotal = Math.max(
+    ...storeTotals.filter((s) => s.availableCount > 0).map((s) => s.total), 0
+  );
+  const totalSavings = Math.round((maxStoreTotal - grandTotal) * 100) / 100;
 
   const byCategory: Record<string, OptimalItem[]> = {};
   for (const item of optimalItems) {
@@ -162,15 +158,12 @@ export async function optimizeList(items: string[]): Promise<OptimizationResult>
     byCategory[item.category].push(item);
   }
 
-  savePriceHistory(itemResults); // fire-and-forget
-
-  const executionTimeMs = Date.now() - startTime;
-  console.log(`[Optimizer] Completado en ${executionTimeMs}ms`);
+  savePriceHistory(itemResults);
 
   return {
     query: items,
     storeTotals,
     optimalRoute: { items: optimalItems, grandTotal, totalSavings, byCategory },
-    executionTimeMs,
+    executionTimeMs: Date.now() - startTime,
   };
 }

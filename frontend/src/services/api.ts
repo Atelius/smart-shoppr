@@ -19,7 +19,9 @@ export interface OptimalItem {
   query: string;
   category: string;
   bestOption: ProductResult | null;
-  allPrices: { store: string; price: number }[];
+  // Full results per store — powers the carousel
+  optionsByStore: Record<string, ProductResult[]>;
+  selectedKey: string | null;
 }
 
 export interface CompareResult {

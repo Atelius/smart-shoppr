@@ -11,11 +11,10 @@ export interface ProductResult {
 const USER_AGENT =
   "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36";
 
-// VTEX generates product URLs from the product name: "HCF Leche Entera 1 L" → "/hcf-leche-entera-1-l/p"
 function nameToVtexSlug(name: string): string {
   return name
     .toLowerCase()
-    .normalize("NFD").replace(/[\u0300-\u036f]/g, "") // remove accents
+    .normalize("NFD").replace(/[\u0300-\u036f]/g, "")
     .replace(/[^a-z0-9\s-]/g, "")
     .trim()
     .replace(/\s+/g, "-");
@@ -52,30 +51,63 @@ export async function hebScraper(query: string): Promise<ProductResult[]> {
       const cards = document.querySelectorAll("article.vtex-product-summary-2-x-element");
 
       return Array.from(cards).slice(0, 5).map((card) => {
-        const nameEl = card.querySelector("[class*='productNameContainer']");
-        const priceEl = card.querySelector("div.price-shelf");
+        const nameEl      = card.querySelector("[class*='productNameContainer']");
+        const priceEl     = card.querySelector("div.price-shelf");
         const imgContainer = card.querySelector("[class*='imageContainer']");
-        const imgEl = imgContainer?.querySelector("img");
+        const imgEl       = imgContainer?.querySelector("img");
 
         const rawPrice = priceEl?.textContent?.replace(/[^0-9.]/g, "") ?? "0";
-        const name = nameEl?.textContent?.trim() ?? "Sin nombre";
+        const name     = nameEl?.textContent?.trim() ?? "Sin nombre";
+
+        // Try to get the real product URL from the <a> data attributes or href
+        // VTEX renders links via JS — capture from window.__RUNTIME__ or data attrs
+        const linkEl = card.querySelector("a[href*='/p']") ??
+                       card.querySelector("a[href]");
+        const href   = linkEl?.getAttribute("href") ?? "";
+        const fullLink = href.startsWith("http")
+          ? href
+          : href
+            ? `https://www.heb.com.mx${href}`
+            : "";
 
         return {
           name,
-          price: parseFloat(rawPrice) || 0,
+          price:    parseFloat(rawPrice) || 0,
           imageUrl: imgEl?.getAttribute("src") ?? imgEl?.getAttribute("data-src") ?? "",
+          rawLink:  fullLink,
         };
       });
     });
 
-    for (const item of items) {
-      if (item.price > 0) {
-        const slug = nameToVtexSlug(item.name);
-        results.push({
-          store: "HEB",
-          ...item,
-          link: `https://www.heb.com.mx/${slug}/p`,
-        });
+    // Also intercept navigation clicks to capture real VTEX URLs
+    // by reading the __RUNTIME__ store data if available
+    const vtexData = await page.evaluate(() => {
+      try {
+        const runtime = (window as any).__RUNTIME__;
+        if (!runtime?.store?.products) return null;
+        return Object.values(runtime.store.products).slice(0, 5).map((p: any) => ({
+          name:     p.productName ?? p.name ?? "",
+          price:    p.priceRange?.sellingPrice?.highPrice ?? p.items?.[0]?.sellers?.[0]?.commertialOffer?.Price ?? 0,
+          imageUrl: p.items?.[0]?.images?.[0]?.imageUrl ?? "",
+          link:     `https://www.heb.com.mx/${p.linkText ?? ""}/p`,
+        }));
+      } catch { return null; }
+    });
+
+    if (vtexData && vtexData.length > 0) {
+      // Use VTEX runtime data — has real links and images
+      for (const p of vtexData) {
+        if (p.price > 0) {
+          results.push({ store: "HEB", name: p.name, price: p.price, link: p.link, imageUrl: p.imageUrl });
+        }
+      }
+    } else {
+      // Fallback: use DOM-scraped data with slug-generated link
+      for (const item of items) {
+        if (item.price > 0) {
+          const link = item.rawLink || `https://www.heb.com.mx/${nameToVtexSlug(item.name)}/p`;
+          results.push({ store: "HEB", name: item.name, price: item.price, link, imageUrl: item.imageUrl });
+        }
       }
     }
 
