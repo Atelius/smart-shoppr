@@ -1,5 +1,6 @@
 import { searchEngine, SearchResults } from "./searchEngine";
 import { ProductResult } from "./scrapers/hebScraper";
+import { flushCacheToHistory } from "./cacheService";
 import prisma from "../prismaClient";
 
 const CATEGORY_KEYWORDS: Record<string, string[]> = {
@@ -15,7 +16,7 @@ const CATEGORY_KEYWORDS: Record<string, string[]> = {
   "Congelados":        ["helado", "pizza", "nuggets", "congelado", "paleta"],
 };
 
-function classifyProduct(name: string): string {
+export function classifyProduct(name: string): string {
   const lower = name.toLowerCase().normalize("NFD").replace(/[\u0300-\u036f]/g, "");
   for (const [category, keywords] of Object.entries(CATEGORY_KEYWORDS)) {
     if (keywords.some((kw) => lower.includes(kw))) return category;
@@ -30,23 +31,13 @@ export interface StoreTotal {
   unavailableItems: string[];
 }
 
-// Now includes full product details per store — powers the carousel
-export interface StoreOption {
-  store: string;
-  price: number;
-  name: string;
-  imageUrl: string;
-  link: string;
-}
-
 export interface OptimalItem {
   query: string;
   category: string;
   bestOption: ProductResult | null;
-  // All results grouped by store (full details for carousel)
   optionsByStore: Record<string, ProductResult[]>;
-  // Selected override: user can pin a specific product
-  selectedKey: string | null; // format: "store::productName"
+  fromCache: boolean;
+  selectedKey: string | null;
 }
 
 export interface OptimizationResult {
@@ -57,7 +48,9 @@ export interface OptimizationResult {
     grandTotal: number;
     totalSavings: number;
     byCategory: Record<string, OptimalItem[]>;
+    byStore: Record<string, OptimalItem[]>;   // ← NEW: grouped by store
   };
+  cacheStats: { fromCache: number; scraped: number };
   executionTimeMs: number;
 }
 
@@ -72,7 +65,9 @@ function buildStoreTotals(
     let availableCount = 0;
 
     for (const { query, results } of itemResults) {
-      const match = results.filter((r) => r.store === store).sort((a, b) => a.price - b.price)[0];
+      const match = results
+        .filter((r) => r.store === store)
+        .sort((a, b) => a.price - b.price)[0];
       if (match) { total += match.price; availableCount++; }
       else unavailableItems.push(query);
     }
@@ -81,67 +76,48 @@ function buildStoreTotals(
   });
 }
 
-function buildOptimalRoute(
-  itemResults: { query: string; results: ProductResult[] }[]
+function buildOptimalItems(
+  itemResults: { query: string; results: ProductResult[]; fromCache: boolean }[]
 ): OptimalItem[] {
-  return itemResults.map(({ query, results }) => {
+  return itemResults.map(({ query, results, fromCache }) => {
     const category = classifyProduct(query);
 
-    // Group all results by store
     const optionsByStore: Record<string, ProductResult[]> = {};
     for (const r of results) {
       if (!optionsByStore[r.store]) optionsByStore[r.store] = [];
       optionsByStore[r.store].push(r);
     }
 
-    // Best = cheapest across all stores
     const best = results.length > 0
       ? results.reduce((a, b) => (a.price < b.price ? a : b))
       : null;
 
-    return { query, category, bestOption: best, optionsByStore, selectedKey: null };
+    return { query, category, bestOption: best, optionsByStore, fromCache, selectedKey: null };
   });
 }
 
-async function savePriceHistory(
-  itemResults: { query: string; results: ProductResult[] }[]
-): Promise<void> {
-  try {
-    for (const { query, results } of itemResults) {
-      if (results.length === 0) continue;
-      const category = classifyProduct(query);
-      const product = await prisma.product.upsert({
-        where: { name: query }, update: {},
-        create: { name: query, category },
-      });
-      for (const r of results) {
-        const store = await prisma.store.upsert({
-          where: { name: r.store }, update: {},
-          create: { name: r.store },
-        });
-        await prisma.priceHistory.create({
-          data: { productId: product.id, storeId: store.id, price: r.price, isAvailable: true },
-        });
-      }
-    }
-    console.log("[DB] Precios guardados en PriceHistory");
-  } catch (err) {
-    console.error("[DB] Error guardando precios:", err);
-  }
-}
-
-export async function optimizeList(items: string[]): Promise<OptimizationResult> {
+export async function optimizeList(
+  items: string[],
+  forceItems: string[] = []   // specific items to force-refresh
+): Promise<OptimizationResult> {
   const startTime = Date.now();
   console.log(`[Optimizer] Comparando ${items.length} productos...`);
 
   const itemResults = await Promise.all(
-    items.map((item) =>
-      searchEngine(item).then((r: SearchResults) => ({ query: item, results: r.results }))
-    )
+    items.map(async (item) => {
+      const force = forceItems.includes(item);
+      const r: SearchResults = await searchEngine(item, force);
+      return { query: item, results: r.results, fromCache: r.fromCache };
+    })
   );
 
+  const cacheStats = {
+    fromCache: itemResults.filter((r) => r.fromCache).length,
+    scraped:   itemResults.filter((r) => !r.fromCache).length,
+  };
+
   const storeTotals  = buildStoreTotals(itemResults);
-  const optimalItems = buildOptimalRoute(itemResults);
+  const optimalItems = buildOptimalItems(itemResults);
 
   const grandTotal = Math.round(
     optimalItems.reduce((sum, item) => sum + (item.bestOption?.price ?? 0), 0) * 100
@@ -152,18 +128,40 @@ export async function optimizeList(items: string[]): Promise<OptimizationResult>
   );
   const totalSavings = Math.round((maxStoreTotal - grandTotal) * 100) / 100;
 
+  // Group by category
   const byCategory: Record<string, OptimalItem[]> = {};
   for (const item of optimalItems) {
     if (!byCategory[item.category]) byCategory[item.category] = [];
     byCategory[item.category].push(item);
   }
 
-  savePriceHistory(itemResults);
+  // Group by store (optimal route: only items where this store is cheapest)
+  const byStore: Record<string, OptimalItem[]> = {};
+  for (const store of ACTIVE_STORES) byStore[store] = [];
+  byStore["Sin disponibilidad"] = [];
+
+  for (const item of optimalItems) {
+    if (!item.bestOption) {
+      byStore["Sin disponibilidad"].push(item);
+    } else {
+      if (!byStore[item.bestOption.store]) byStore[item.bestOption.store] = [];
+      byStore[item.bestOption.store].push(item);
+    }
+  }
+  // Remove empty store groups
+  for (const store of Object.keys(byStore)) {
+    if (byStore[store].length === 0) delete byStore[store];
+  }
+
+  console.log(`[Optimizer] Cache: ${cacheStats.fromCache} hits, ${cacheStats.scraped} scraped`);
 
   return {
     query: items,
     storeTotals,
-    optimalRoute: { items: optimalItems, grandTotal, totalSavings, byCategory },
+    optimalRoute: { items: optimalItems, grandTotal, totalSavings, byCategory, byStore },
+    cacheStats,
     executionTimeMs: Date.now() - startTime,
   };
 }
+
+export { flushCacheToHistory };

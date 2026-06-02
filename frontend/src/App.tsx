@@ -16,10 +16,10 @@ export default function App() {
   const [error,     setError]     = useState("");
   const [lastItems, setLastItems] = useState<string[]>([]);
 
-  async function handleCompare(items: string[]) {
+  async function handleCompare(items: string[], force: string[] = []) {
     setLoading(true); setError(""); setLastItems(items);
     try {
-      const data = await compareList(items);
+      const data = await compareList(items, force);
       setResult(data);
       setView("results");
     } catch (e: any) {
@@ -29,22 +29,28 @@ export default function App() {
     }
   }
 
+  // Force refresh specific items while keeping the rest from cache
+  async function handleForceRefresh(forceItems: string[]) {
+    if (!lastItems.length) return;
+    handleCompare(lastItems, forceItems);
+  }
+
   async function handleSave(name: string) {
     try { await saveList(name, lastItems); }
     catch (e: any) { console.error("Error guardando:", e); }
   }
 
   const NAV: { id: View; label: string; Icon: React.ElementType }[] = [
-    { id: "input",   label: "Mi Lista",  Icon: ShoppingCart },
+    { id: "input",   label: "Mi Lista",   Icon: ShoppingCart },
     { id: "saved",   label: "Mis Listas", Icon: BookOpen },
-    { id: "metrics", label: "Métricas",  Icon: TrendingUp },
+    { id: "metrics", label: "Métricas",   Icon: TrendingUp },
   ];
 
   const isActive = (id: View) => view === id || (view === "results" && id === "input");
 
   return (
     <div style={{ minHeight: "100svh", background: "#09090b", color: "#fff" }}>
-      {/* Grid background */}
+      {/* Grid bg */}
       <div style={{ position: "fixed", inset: 0, pointerEvents: "none", opacity: 0.025, backgroundImage: "linear-gradient(#a3e635 1px, transparent 1px), linear-gradient(90deg, #a3e635 1px, transparent 1px)", backgroundSize: "40px 40px" }} />
 
       {/* Header */}
@@ -58,7 +64,6 @@ export default function App() {
               smart<span style={{ color: "#a3e635" }}>shopper</span>
             </span>
           </button>
-
           <nav style={{ display: "flex", gap: "4px" }}>
             {NAV.map(({ id, label, Icon }) => (
               <button key={id} onClick={() => setView(id)} style={{ display: "flex", alignItems: "center", gap: "6px", padding: "6px 12px", borderRadius: "8px", border: "none", background: isActive(id) ? "#27272a" : "transparent", color: isActive(id) ? "#fff" : "#71717a", cursor: "pointer", fontSize: "12px", fontFamily: "inherit", transition: "all 0.15s" }}>
@@ -79,15 +84,18 @@ export default function App() {
         )}
         {view === "results" && result && (
           <div className="animate-fade-in">
-            <ComparisonDashboard data={result} onNewSearch={() => setView("input")} onSave={handleSave} />
+            <ComparisonDashboard
+              data={result}
+              onNewSearch={() => setView("input")}
+              onSave={handleSave}
+              onForceRefresh={handleForceRefresh}
+            />
           </div>
         )}
-        {view === "metrics" && (
-          <div className="animate-fade-in"><PriceMetrics /></div>
-        )}
+        {view === "metrics" && <div className="animate-fade-in"><PriceMetrics /></div>}
         {view === "saved" && (
           <div className="animate-fade-in">
-            <SavedLists onCompareList={(items) => { setView("input"); handleCompare(items); }} />
+            <SavedLists onCompareList={(items) => handleCompare(items)} />
           </div>
         )}
       </main>

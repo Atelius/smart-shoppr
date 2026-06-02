@@ -62,3 +62,12 @@ model ListItem {
   shoppingList ShoppingList @relation(fields: [shoppingListId], references: [id], onDelete: Cascade)
   product      Product      @relation(fields: [productId], references: [id], onDelete: Cascade)
 }
+
+// 6. Search cache — avoids re-scraping within 24hrs
+model CachedSearch {
+  id        String   @id @default(uuid())
+  query     String   @unique   // normalized query, e.g. "leche"
+  results   String             // JSON array of ProductResult[]
+  cachedAt  DateTime @default(now())
+  flushed   Boolean  @default(false) // true once moved to PriceHistory
+}
