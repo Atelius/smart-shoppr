@@ -332,13 +332,11 @@ Soriana a veces devuelve resultados no relacionados (ej. buscar "huevo" puede tr
 ## Roadmap
 
 - [ ] **APK móvil** con Capacitor (envuelve el frontend en WebView nativo)
-- [ ] **Sam's Club** via ZenRows o API alternativa
-- [ ] **Chedraui** (corre en VTEX, misma arquitectura que HEB)
 - [ ] **Cron automático** para flush diario de caché a historial
-- [ ] **Links correctos de HEB** — interceptar GraphQL de VTEX para obtener `productId`
+- [ ] **Links correctos de algunas tiendas** — interceptar GraphQL de VTEX para obtener `productId`
 - [ ] **Notificaciones de precio** — alertar cuando un producto baja de cierto precio
 - [ ] **Modo offline** — usar caché local en el móvil sin conexión
-- [ ] **Publicación en Play Store**
+
 
 ---
 
