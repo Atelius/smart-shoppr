@@ -13,15 +13,23 @@ export interface StoreTotal {
   total: number;
   availableCount: number;
   unavailableItems: string[];
+  isManualStore?: boolean;
 }
 
 export interface OptimalItem {
   query: string;
   category: string;
   bestOption: ProductResult | null;
-  // Full results per store — powers the carousel
   optionsByStore: Record<string, ProductResult[]>;
+  fromCache: boolean;
+  isManual: boolean;
   selectedKey: string | null;
+}
+
+export interface ManualItem {
+  name: string;
+  store: string;
+  price: number;
 }
 
 export interface CompareResult {
@@ -32,7 +40,9 @@ export interface CompareResult {
     grandTotal: number;
     totalSavings: number;
     byCategory: Record<string, OptimalItem[]>;
+    byStore: Record<string, OptimalItem[]>;
   };
+  cacheStats: { fromCache: number; scraped: number; manual: number };
   executionTimeMs: number;
 }
 
@@ -43,11 +53,15 @@ export interface PriceHistoryPoint {
   product: { name: string };
 }
 
-export async function compareList(items: string[]): Promise<CompareResult> {
+export async function compareList(
+  items: string[],
+  force: string[] = [],
+  manualItems: ManualItem[] = []
+): Promise<CompareResult> {
   const res = await fetch(`${BASE_URL}/api/lists/compare`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ items }),
+    body: JSON.stringify({ items, force, manualItems }),
   });
   if (!res.ok) throw new Error(`Error ${res.status}: ${await res.text()}`);
   return res.json();
@@ -68,4 +82,9 @@ export async function getPriceHistory(productName: string): Promise<PriceHistory
   );
   if (!res.ok) throw new Error(`Error ${res.status}`);
   return res.json();
+}
+
+export async function flushCache(): Promise<void> {
+  const res = await fetch(`${BASE_URL}/api/lists/flush-cache`, { method: "POST" });
+  if (!res.ok) throw new Error(`Error ${res.status}`);
 }
